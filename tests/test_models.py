@@ -27,9 +27,10 @@ import os
 import logging
 import unittest
 from decimal import Decimal
-from service.models import Product, Category, db
+from service.models import Product, Category, db, DataValidationError
 from service import app
 from tests.factories import ProductFactory
+from unittest.mock import patch
 
 DATABASE_URI = os.getenv(
     "DATABASE_URI", "postgresql://postgres:postgres@localhost:5432/postgres"
@@ -101,6 +102,248 @@ class TestProductModel(unittest.TestCase):
         self.assertEqual(new_product.available, product.available)
         self.assertEqual(new_product.category, product.category)
 
-    #
-    # ADD YOUR TEST CASES HERE
-    #
+
+    def test_read_a_product(self):
+        """It should Read a Product"""
+        product = ProductFactory()
+        product.id = None
+        product.create()
+        self.assertIsNotNone(product.id)
+        # Fetch it back
+        found_product = Product.find(product.id)
+        self.assertEqual(found_product.id, product.id)
+        self.assertEqual(found_product.name, product.name)
+        self.assertEqual(found_product.description, product.description)
+        self.assertEqual(found_product.price, product.price)
+
+    def test_update_a_product(self):
+        """It should Update a Product"""
+        # Create product instance
+        product = ProductFactory()
+        product.create()
+        self.assertIsNotNone(product.id)
+
+        # Modify product description and save it
+        original_description = product.description
+        product.description = "testing"
+        original_id = product.id
+
+        product.update()
+        self.assertEqual(product.id, original_id)  # Ensure ID hasn't changed
+        self.assertEqual(product.description, "testing")  # Ensure description updated
+
+        # Fetch updated product and verify changes
+        products = Product.all()
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0].id, original_id)
+        self.assertEqual(products[0].description, "testing")
+
+    def test_update_a_product_without_id(self):
+            """It should raise DataValidationError if product has no id"""
+            # Create product instance
+            product = ProductFactory()
+            product.id = None  # Set product ID to None (invalid)
+            
+            # Ensure DataValidationError is raised when calling update with None ID
+            with self.assertRaises(DataValidationError) as context:
+                product.update()
+            
+            # Check that the exception message is as expected
+            self.assertEqual(str(context.exception), "Update called with empty ID field")
+
+    def test_delete_a_product(self):
+        """It should Delete a Product"""
+        product = ProductFactory()
+        product.create()
+        self.assertEqual(len(Product.all()), 1)
+        # delete the product and make sure it isn't in the database
+        product.delete()
+        self.assertEqual(len(Product.all()), 0)
+
+    def test_list_all_products(self):
+        """It should List all Products in the database"""
+        products = Product.all()
+        self.assertEqual(products, [])
+        # Create 5 Products
+        for _ in range(5):
+            product = ProductFactory()
+            product.create()
+        # See if we get back 5 products
+        products = Product.all()
+        self.assertEqual(len(products), 5)
+
+    def test_find_by_name(self):
+        """It should Find a Product by Name"""
+        products = ProductFactory.create_batch(5)
+        for product in products:
+            product.create()
+        name = products[0].name
+        count = len([product for product in products if product.name == name])
+        found = Product.find_by_name(name)
+        self.assertEqual(found.count(), count)
+        for product in found:
+            self.assertEqual(product.name, name)
+
+    def test_find_by_availability(self):
+        """It should Find Products by Availability"""
+        products = ProductFactory.create_batch(10)
+        for product in products:
+            product.create()
+        available = products[0].available
+        count = len([product for product in products if product.available == available])
+        found = Product.find_by_availability(available)
+        self.assertEqual(found.count(), count)
+        for product in found:
+            self.assertEqual(product.available, available)
+
+    def test_find_by_category(self):
+        """It should Find Products by Category"""
+        products = ProductFactory.create_batch(10)
+        for product in products:
+            product.create()
+        category = products[0].category
+        count = len([product for product in products if product.category == category])
+        found = Product.find_by_category(category)
+        self.assertEqual(found.count(), count)
+        for product in found:
+            self.assertEqual(product.category, category)
+
+    def test_deserialize_invalid_available(self):
+        """Test that DataValidationError is raised if 'available' is not a boolean"""
+        
+        invalid_data = {
+            "name": "Test Product",
+            "description": "A product for testing",
+            "price": "19.99",  # Assuming price is a string but will be converted to Decimal
+            "available": "yes"  # This should raise an error because it's not a boolean
+        }
+
+        product = Product()
+
+        with self.assertRaises(DataValidationError) as context:
+            product.deserialize(invalid_data)
+        
+        self.assertEqual(
+            str(context.exception),
+            "Invalid type for boolean [available]: <class 'str'>"
+        )
+
+    def test_deserialize_missing_field(self):
+        """Test that DataValidationError is raised if a required field is missing"""
+        
+        missing_field_data = {
+            "name": "Test Product",
+            "description": "A product for testing",
+            "price": "19.99",
+            # Missing 'available' field
+        }
+
+        product = Product()
+
+        with self.assertRaises(DataValidationError) as context:
+            product.deserialize(missing_field_data)
+        
+        self.assertEqual(
+            str(context.exception),
+            "Invalid product: missing available"
+        )
+
+    def test_deserialize_invalid_category(self):
+        """Test that DataValidationError is raised if 'category' does not match a valid enum value"""
+        
+        invalid_category_data = {
+            "name": "Test Product",
+            "description": "A product for testing",
+            "price": "19.99",
+            "available": True,
+            "category": "non_existent_category"  # Invalid category
+        }
+
+        product = Product()
+
+        with self.assertRaises(DataValidationError) as context:
+            product.deserialize(invalid_category_data)
+        
+        self.assertEqual(
+            str(context.exception),
+            "Invalid attribute: non_existent_category"
+        )
+
+    def test_deserialize_invalid_price(self):
+        """Test that DataValidationError is raised if price is not a valid Decimal"""
+    
+        invalid_price_data = {
+            "name": "Test Product",
+            "description": "A product for testing",
+            "price": "not_a_number",  # Invalid price
+            "available": True,
+            "category": "ValidCategory"  # Assume this is a valid category
+        }
+
+        product = Product()
+
+        with self.assertRaises(DataValidationError) as context:
+            product.deserialize(invalid_price_data)
+        
+        self.assertEqual(
+            str(context.exception),
+            "Invalid price: not_a_number"
+        )
+
+    def test_deserialize_type_error(self):
+        """Test that DataValidationError is raised if there's a TypeError during deserialization"""
+        
+        # Invalid data that will trigger a TypeError
+        invalid_data = {
+            "name": "Test Product",
+            "description": "A product for testing",
+            "price": "19.99",  # Valid price
+            "available": True,  # Valid available
+            # Missing or malformed category data that could trigger a TypeError
+            "category": None  # This could raise a TypeError when attempting to use getattr
+        }
+
+        product = Product()
+
+        with self.assertRaises(DataValidationError) as context:
+            product.deserialize(invalid_data)
+        
+        # Adjust the expected exception message to match the one raised by getattr error
+        self.assertEqual(
+            str(context.exception),
+            "Invalid product: body of request contained bad or no data getattr(): attribute name must be string"
+        )
+
+    @patch('service.models.logger')  # Adjust the logger path as needed
+    def test_find_by_price_logging(self, mock_logger):
+        """Test that logger.info is called correctly when calling find_by_price"""
+        
+        # Test data
+        price = Decimal('19.99')
+
+        # Mock the return value of query.filter (you can adjust based on your actual ORM)
+        mock_query = unittest.mock.MagicMock()
+        Product.query.filter = mock_query
+
+        # Call the method we're testing
+        Product.find_by_price(price)
+
+        # Check that logger.info was called with the correct message
+        mock_logger.info.assert_called_with("Processing price query for %s ...", price)
+
+    @patch('service.models.logger')
+    def test_find_by_price_logging_with_string_price(self, mock_logger):
+        """Test that logger.info is called correctly when price is passed as a string"""
+
+        # Test data as a string
+        price = '19.99'
+
+        # Mock the return value of query.filter (you can adjust based on your actual ORM)
+        mock_query = unittest.mock.MagicMock()
+        Product.query.filter = mock_query
+
+        # Call the method we're testing
+        Product.find_by_price(price)
+
+        # Check that logger.info was called with the correct message (logging the string, not Decimal)
+        mock_logger.info.assert_called_with("Processing price query for %s ...", price)
